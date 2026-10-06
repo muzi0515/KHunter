@@ -36,6 +36,8 @@ jobs:
           import os
           from pathlib import Path
           import yaml
+          import json
+          import exchange_calendars as xc
           webhook = os.environ.get('FEISHU_WEBHOOK', '')
           if not webhook:
               raise SystemExit('Missing FEISHU_WEBHOOK repository secret')
@@ -46,6 +48,10 @@ jobs:
           config['ptrade']['enabled'] = False
           config['pipeline_schedule']['detect_trading_day'] = False
           path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding='utf-8')
+          calendar = xc.get_calendar('XSHG')
+          Path('data').mkdir(exist_ok=True)
+          Path('data/trading_calendar_cache.json').write_text(json.dumps({
+              'dates': calendar.sessions.strftime('%Y-%m-%d').tolist()}))
           PY
       - name: Fetch market history and repair missing stocks
         id: history
