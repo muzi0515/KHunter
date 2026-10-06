@@ -1,0 +1,83 @@
+name: KHunter 每日选股
+on:
+  schedule:
+    - cron: '0 9 * * 1-5'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: khunter-daily
+  cancel-in-progress: false
+jobs:
+  selection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      TZ: Asia/Shanghai
+      PYTHONUNBUFFERED: '1'
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: khunter-db-v1-${{ github.run_id }}
+          restore-keys: khunter-db-v1-
+      - name: Configure selection and Feishu
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import yaml
+          webhook = os.environ.get('FEISHU_WEBHOOK', '')
+          if not webhook:
+              raise SystemExit('Missing FEISHU_WEBHOOK repository secret')
+          path = Path('config/config.yaml')
+          config = yaml.safe_load(path.read_text(encoding='utf-8-sig'))
+          config['feishu'] = {'webhook_url': webhook, 'alert_only': False}
+          config['run_mode'] = {'mode': 'manual'}
+          config['ptrade']['enabled'] = False
+          config['pipeline_schedule']['detect_trading_day'] = True
+          path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding='utf-8')
+          PY
+      - name: Initialize historical data on first run
+        run: |
+          python - <<'PY'
+          from main import QuantSystem
+          quant = QuantSystem()
+          if not quant.db_manager.list_all_stocks():
+              quant.init_data()
+          if not quant.db_manager.list_all_stocks():
+              raise SystemExit('Initialization did not produce stock data')
+          PY
+      - name: Run daily pipeline and push
+        run: |
+          python - <<'PYCODE'
+          import os
+          import sys
+          from scheduler.scheduled_runner import ScheduledRunner
+          result = ScheduledRunner().run_once()
+          sys.stdout.flush()
+          sys.stderr.flush()
+          os._exit(0 if result.status in ('success', 'skipped') else 1)
+          PYCODE
+      - uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: data
+          key: khunter-db-v1-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: khunter-results-${{ github.run_id }}
+          path: |
+            logs/
+            data/running/
+          retention-days: 14
